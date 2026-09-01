@@ -79,9 +79,17 @@ class AAPClient:
             next_url = payload.get("next")
             first = False
 
-    def workflow_runs(self, template_id: int, after_id: int = 0) -> Iterator[Dict[str, Any]]:
+    def workflow_runs(
+        self,
+        template_id: int,
+        started_gte: str,
+        started_lt: str,
+        after_id: int = 0,
+    ) -> Iterator[Dict[str, Any]]:
         params: Dict[str, Any] = {
             "workflow_job_template": template_id,
+            "started__gte": started_gte,
+            "started__lt": started_lt,
             "order_by": "id",
         }
         if after_id:
