@@ -9,7 +9,7 @@ The module accepts a Workflow Job Template ID and discovers completed root workf
 A topology such as the following requires no code changes:
 
 ```text
-Desired State Configuration workflow
+workflow
 ├── DT workflow
 │   ├── domain-1 job
 │   └── domain-2 job
