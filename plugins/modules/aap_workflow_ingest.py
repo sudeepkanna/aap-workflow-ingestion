@@ -7,10 +7,11 @@ module: aap_workflow_ingest
 short_description: Recursively ingest AAP workflow execution telemetry into PostgreSQL
 description:
   - Starts from an AAP Workflow Job Template ID.
-  - Discovers completed root workflow runs incrementally.
+  - By default ingests workflow runs started today in the configured timezone.
+  - Accepts run_date for idempotent ingestion or backfill of an older date.
   - Recursively traverses nested workflow jobs with no fixed depth or fan-out assumptions.
   - Persists workflow relationships, jobs, inventories, host summaries, job events and raw JSON payloads.
-  - Uses PostgreSQL upserts and a per-template checkpoint for idempotence.
+  - Uses PostgreSQL upserts and a per-template, per-date checkpoint for idempotence.
   - Supports check mode without modifying PostgreSQL.
 options:
   controller_url:
@@ -30,6 +31,17 @@ options:
   postgres_schema:
     type: str
     default: aap_ingest
+  run_date:
+    type: str
+    required: false
+    description:
+      - Workflow start date to ingest in YYYY-MM-DD format.
+      - When omitted, today's date is used in run_timezone.
+  run_timezone:
+    type: str
+    default: UTC
+    description:
+      - IANA timezone used to define the selected day's boundaries.
   api_path:
     type: str
     default: /api/v2
@@ -46,7 +58,7 @@ options:
     type: int
     default: 0
     description:
-      - Maximum completed root workflow runs to process in one invocation.
+      - Maximum root workflow runs to process in one invocation.
       - Zero means no module-imposed limit.
 requirements:
   - requests
@@ -55,12 +67,22 @@ supports_check_mode: true
 '''
 
 EXAMPLES = r'''
-- name: Ingest AAP workflow telemetry
+- name: Ingest today's AAP workflow telemetry
   sudeep.aap_ingestion.aap_workflow_ingest:
     controller_url: https://aap.example.com
     token: "{{ controller_token }}"
     workflow_template_id: 42
     postgres_dsn: "{{ aap_reporting_postgres_dsn }}"
+    run_timezone: Asia/Kolkata
+
+- name: Backfill a historical date
+  sudeep.aap_ingestion.aap_workflow_ingest:
+    controller_url: https://aap.example.com
+    token: "{{ controller_token }}"
+    workflow_template_id: 42
+    postgres_dsn: "{{ aap_reporting_postgres_dsn }}"
+    run_date: '2026-08-28'
+    run_timezone: Asia/Kolkata
 '''
 
 RETURN = r'''
@@ -68,6 +90,16 @@ processed_root_workflow_ids:
   description: Root workflow job IDs committed during this invocation.
   returned: always
   type: list
+run_date:
+  description: Date selected for ingestion.
+  returned: always
+  type: str
+window_start_utc:
+  returned: always
+  type: str
+window_end_utc:
+  returned: always
+  type: str
 checkpoint_before:
   returned: always
   type: int
@@ -88,7 +120,9 @@ from ansible.module_utils.basic import AnsibleModule
 
 from ansible_collections.sudeep.aap_ingestion.plugins.module_utils.aap_client import AAPClient, AAPClientError
 from ansible_collections.sudeep.aap_ingestion.plugins.module_utils.collector import WorkflowCollector, plan_roots
-from ansible_collections.sudeep.aap_ingestion.plugins.module_utils.postgres_store import PostgresStore, StoreError
+from ansible_collections.sudeep.aap_ingestion.plugins.module_utils.date_aware_store import DateAwarePostgresStore
+from ansible_collections.sudeep.aap_ingestion.plugins.module_utils.date_window import resolve_run_window
+from ansible_collections.sudeep.aap_ingestion.plugins.module_utils.postgres_store import StoreError
 
 
 TERMINAL_STATUSES = {"successful", "failed", "error", "canceled"}
@@ -101,6 +135,8 @@ def argument_spec():
         "workflow_template_id": {"type": "int", "required": True},
         "postgres_dsn": {"type": "str", "required": True, "no_log": True},
         "postgres_schema": {"type": "str", "default": "aap_ingest"},
+        "run_date": {"type": "str", "required": False, "default": None},
+        "run_timezone": {"type": "str", "default": "UTC"},
         "api_path": {"type": "str", "default": "/api/v2"},
         "verify_ssl": {"type": "bool", "default": True},
         "request_timeout": {"type": "int", "default": 30},
@@ -114,6 +150,13 @@ def main():
     p = module.params
     template_id = p["workflow_template_id"]
 
+    try:
+        selected_date, window_start, window_end = resolve_run_window(
+            p["run_date"], p["run_timezone"]
+        )
+    except ValueError as exc:
+        module.fail_json(msg=str(exc))
+
     client = AAPClient(
         base_url=p["controller_url"],
         token=p["token"],
@@ -122,7 +165,7 @@ def main():
         timeout=p["request_timeout"],
         page_size=p["page_size"],
     )
-    store = PostgresStore(p["postgres_dsn"], p["postgres_schema"])
+    store = DateAwarePostgresStore(p["postgres_dsn"], p["postgres_schema"])
 
     processed = []
     metrics = {}
@@ -131,10 +174,12 @@ def main():
     try:
         store.connect()
         schema_existed = store.schema_exists()
-        checkpoint_before = store.checkpoint(template_id) if schema_existed else 0
+        checkpoint_before = store.checkpoint_for_date(template_id, selected_date)
         roots = plan_roots(
             client,
             template_id=template_id,
+            started_gte=window_start,
+            started_lt=window_end,
             after_id=checkpoint_before,
             limit=p["max_root_runs"],
         )
@@ -147,13 +192,21 @@ def main():
                 break
             completed_roots.append(root)
 
+        common_result = {
+            "run_date": selected_date.isoformat(),
+            "run_timezone": p["run_timezone"],
+            "window_start_utc": window_start,
+            "window_end_utc": window_end,
+            "checkpoint_before": checkpoint_before,
+            "blocked_by_incomplete_root": blocked_by,
+        }
+
         if module.check_mode:
             module.exit_json(
                 changed=bool((not schema_existed) or completed_roots),
-                checkpoint_before=checkpoint_before,
                 checkpoint_after=checkpoint_before,
                 planned_root_workflow_ids=[int(r["id"]) for r in completed_roots],
-                blocked_by_incomplete_root=blocked_by,
+                **common_result,
             )
 
         if not store.acquire_lock(template_id):
@@ -167,17 +220,16 @@ def main():
             root_id = int(root["id"])
             with store.root_transaction():
                 metrics[str(root_id)] = collector.collect_root(root)
-                store.update_checkpoint(template_id, root_id)
+                store.update_checkpoint_for_date(template_id, selected_date, root_id)
             processed.append(root_id)
 
         checkpoint_after = processed[-1] if processed else checkpoint_before
         module.exit_json(
             changed=bool((not schema_existed) or processed),
             processed_root_workflow_ids=processed,
-            checkpoint_before=checkpoint_before,
             checkpoint_after=checkpoint_after,
             metrics=metrics,
-            blocked_by_incomplete_root=blocked_by,
+            **common_result,
         )
 
     except (AAPClientError, StoreError, KeyError, ValueError) as exc:
