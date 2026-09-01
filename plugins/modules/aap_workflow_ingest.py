@@ -116,14 +116,12 @@ planned_root_workflow_ids:
   type: list
 '''
 
-from datetime import date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
 from ansible.module_utils.basic import AnsibleModule
 
 from ansible_collections.sudeep.aap_ingestion.plugins.module_utils.aap_client import AAPClient, AAPClientError
 from ansible_collections.sudeep.aap_ingestion.plugins.module_utils.collector import WorkflowCollector, plan_roots
 from ansible_collections.sudeep.aap_ingestion.plugins.module_utils.date_aware_store import DateAwarePostgresStore
+from ansible_collections.sudeep.aap_ingestion.plugins.module_utils.date_window import resolve_run_window
 from ansible_collections.sudeep.aap_ingestion.plugins.module_utils.postgres_store import StoreError
 
 
@@ -145,24 +143,6 @@ def argument_spec():
         "page_size": {"type": "int", "default": 200},
         "max_root_runs": {"type": "int", "default": 0},
     }
-
-
-def resolve_run_window(run_date_value: str | None, timezone_name: str):
-    try:
-        tz = ZoneInfo(timezone_name)
-    except ZoneInfoNotFoundError as exc:
-        raise ValueError(f"Invalid run_timezone '{timezone_name}'") from exc
-
-    try:
-        selected_date = date.fromisoformat(run_date_value) if run_date_value else datetime.now(tz).date()
-    except ValueError as exc:
-        raise ValueError("run_date must use YYYY-MM-DD format") from exc
-
-    local_start = datetime.combine(selected_date, time.min, tzinfo=tz)
-    local_end = local_start + timedelta(days=1)
-    utc_start = local_start.astimezone(timezone.utc)
-    utc_end = local_end.astimezone(timezone.utc)
-    return selected_date, utc_start.isoformat(), utc_end.isoformat()
 
 
 def main():
