@@ -1,0 +1,20 @@
+namespace: sudeep
+name: aap_ingestion
+version: 0.1.0
+readme: README.md
+authors:
+  - Sudeep
+summary: Enterprise-oriented recursive AAP workflow telemetry ingestion for PostgreSQL
+description: >-
+  An Ansible collection POC that recursively discovers execution trees from an AAP Workflow Job Template
+  and idempotently persists workflow, job, host, inventory and event telemetry to PostgreSQL.
+license:
+  - MIT
+tags:
+  - aap
+  - automation
+  - reporting
+  - telemetry
+  - postgres
+dependencies: {}
+repository: https://github.com/sudeepkanna/aap-workflow-ingestion
