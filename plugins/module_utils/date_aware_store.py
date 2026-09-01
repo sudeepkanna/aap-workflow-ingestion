@@ -25,6 +25,9 @@ class DateAwarePostgresStore(PostgresStore):
         if not self.schema_exists():
             return 0
         with self._conn().cursor() as cur:
+            cur.execute("SELECT to_regclass(%s)", (f"{self.schema}.ingestion_state_by_date",))
+            if cur.fetchone()[0] is None:
+                return 0
             cur.execute(
                 f"SELECT last_root_workflow_job_id "
                 f"FROM {self.schema}.ingestion_state_by_date "
