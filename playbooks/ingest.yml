@@ -4,13 +4,15 @@
   gather_facts: false
 
   tasks:
-    - name: Recursively ingest completed workflow runs
+    - name: Recursively ingest workflow runs for the selected date
       sudeep.aap_ingestion.aap_workflow_ingest:
         controller_url: "{{ controller_url }}"
         token: "{{ controller_token }}"
         workflow_template_id: "{{ workflow_template_id }}"
         postgres_dsn: "{{ postgres_dsn }}"
         postgres_schema: "{{ postgres_schema | default('aap_ingest') }}"
+        run_date: "{{ run_date | default(omit) }}"
+        run_timezone: "{{ run_timezone | default('UTC') }}"
         api_path: "{{ controller_api_path | default('/api/v2') }}"
         verify_ssl: "{{ controller_verify_ssl | default(true) }}"
       register: ingestion_result
