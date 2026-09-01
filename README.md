@@ -41,9 +41,7 @@ run_date: '2026-08-28'
 run_timezone: Asia/Kolkata
 ```
 
-The date is converted to UTC boundaries before querying AAP. For example, `2026-08-28` in `Asia/Kolkata` becomes a UTC query window from `2026-08-27T18:30:00+00:00` up to, but not including, `2026-08-28T18:30:00+00:00`.
-
-Checkpoint state is maintained independently for each workflow template and selected date. Re-running the same date therefore processes only root workflow runs that were not successfully committed previously.
+The date is converted to UTC boundaries before querying AAP. Checkpoint state is maintained independently for each workflow template and selected date, so a historical backfill cannot disturb today's ingestion position.
 
 ## Design principles
 
@@ -55,9 +53,12 @@ Checkpoint state is maintained independently for each workflow template and sele
 - Every destination entity uses PostgreSQL `ON CONFLICT` semantics.
 - Checkpointing is per workflow template and per run date.
 - Root workflow ingestion is transactional; a failed root run does not advance the date checkpoint.
-- A PostgreSQL advisory lock prevents concurrent collectors for the same workflow template.
+- PostgreSQL advisory locking is scoped to workflow template plus run date.
 - Check mode performs discovery and reports what would be ingested without modifying PostgreSQL.
 - Full AAP payloads are retained in JSONB alongside normalized reporting columns.
+- Every executed unified job payload is retained on the workflow node, including non-job node types.
+- AAP GET requests use bounded retries for transient failures.
+- Absolute related/pagination URLs are rejected if they leave the configured Controller origin.
 - The collector stops at the first incomplete root workflow within the selected date so a later completed run cannot move the date checkpoint past an active run.
 
 ## Data collected
@@ -65,7 +66,7 @@ Checkpoint state is maintained independently for each workflow template and sele
 | Entity | Examples |
 |---|---|
 | Workflow runs | root/child relationship, depth, status, duration, inventory, launch type, raw payload |
-| Workflow nodes | node identifier, parent workflow, executed unified job ID/type, raw node payload |
+| Workflow nodes | node identifier, parent workflow, executed unified job ID/type, full unified-job payload, raw node payload |
 | Jobs | template, status, duration, inventory, execution environment, slicing, limit, parent workflow |
 | Inventories | ID, name, organization, kind, variables, raw payload |
 | Host summaries | changed, failures, ok, skipped, unreachable/dark, processed |
@@ -73,23 +74,7 @@ Checkpoint state is maintained independently for each workflow template and sele
 | Workflow metrics | workflow/job/host/event counts and high-level success/failure counters |
 | Ingestion state | last successfully committed root workflow job per template and run date |
 
-The normalized fields support reporting immediately, while the raw JSONB columns preserve source fidelity for future analytics without requiring the collector to predict every AAP/module return field.
-
-## Collection layout
-
-```text
-plugins/
-├── modules/
-│   └── aap_workflow_ingest.py
-└── module_utils/
-    ├── aap_client.py
-    ├── collector.py
-    ├── date_aware_store.py
-    ├── date_window.py
-    └── postgres_store.py
-```
-
-`aap_workflow_ingest.py` is deliberately thin. API access, date-window calculation, graph traversal and persistence are separated into focused module utilities so the Ansible interface remains stable as the implementation evolves.
+The normalized fields support reporting immediately, while raw JSONB preserves source fidelity for future analytics without requiring the collector to predict every AAP/module return field.
 
 ## Execution flow
 
@@ -143,63 +128,16 @@ per-date checkpoint update after successful commit
         run_timezone: "{{ run_timezone | default('UTC') }}"
 ```
 
-Normal run:
-
-```text
-run_date omitted -> today's workflow runs
-```
-
-Historical backfill through an extra var:
-
-```text
-run_date=2026-08-28
-```
+Normal run: omit `run_date` to ingest today's workflow runs. For historical backfill, supply an extra variable such as `run_date=2026-08-28`.
 
 There are no database commands in the playbook. The module owns schema initialization, reads, upserts, transactions and checkpoint management.
 
-## AAP API path
-
-The default API base is `/api/v2`. Environments exposing controller resources through the AAP platform gateway can override it:
-
-```yaml
-api_path: /api/controller/v2
-```
-
 ## Runtime dependencies
 
-The Execution Environment needs:
+The Execution Environment needs `requests >= 2.31` and `psycopg >= 3.1`. IANA timezone data must be available in the Execution Environment when non-UTC `run_timezone` values are used. Nothing is installed dynamically by the playbook.
 
-```text
-requests >= 2.31
-psycopg >= 3.1
-```
+## Scope
 
-These dependencies belong in the Execution Environment image. Nothing is installed dynamically by the playbook.
+This POC captures complete workflow execution lineage, leaf job telemetry, host summaries, inventory metadata, task/job events and raw API payloads needed to build reporting views in PostgreSQL. Project updates, inventory updates and system jobs are retained as full unified-job JSON on execution nodes but are not yet normalized into dedicated tables.
 
-## PostgreSQL
-
-The target database and login must already exist and the login must be permitted to create/use the configured schema. The module creates and maintains its own tables inside that schema. The POC does not execute external `.sql` files.
-
-Default schema: `aap_ingest`.
-
-## Check mode
-
-Check mode queries AAP, resolves the selected date window and reads any existing per-date checkpoint. It reports the root workflow job IDs that would be processed without creating schemas, tables or rows.
-
-## Idempotence
-
-Idempotence is provided at several levels:
-
-1. Per-template, per-date checkpoint prevents unnecessary reprocessing while allowing historical backfill.
-2. Workflow, node, job, inventory, host-summary and event IDs are destination keys.
-3. Re-seen records use `ON CONFLICT ... DO UPDATE` rather than duplicate inserts.
-4. A root workflow is committed atomically with its date checkpoint.
-5. Incomplete root workflows are not checkpointed.
-
-## Scope of this POC
-
-This version intentionally focuses on workflow execution telemetry required for operational reporting. Project updates, inventory updates and system jobs that may appear as workflow nodes are preserved in `execution_nodes` but are not yet expanded into dedicated telemetry tables. The execution-node model is designed so those unified-job types can be added without changing recursive workflow discovery.
-
-## Enterprise hardening path
-
-Before production adoption, add integration tests against the organization's supported AAP/PostgreSQL versions, credential injection through AAP credentials rather than plain variables, TLS policy validation, retention/partitioning policy for high-volume event tables, observability for collector failures and throughput, and controlled schema-version migrations.
+Before production adoption, integration-test against the organization's supported AAP/PostgreSQL versions and define retention/partitioning policy for high-volume event data.
