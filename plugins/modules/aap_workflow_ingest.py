@@ -209,8 +209,13 @@ def main():
                 **common_result,
             )
 
-        if not store.acquire_lock(template_id):
-            module.fail_json(msg=f"Another ingestion process is already active for workflow template {template_id}")
+        if not store.acquire_date_lock(template_id, selected_date):
+            module.fail_json(
+                msg=(
+                    "Another ingestion process is already active for workflow template "
+                    f"{template_id} and run date {selected_date.isoformat()}"
+                )
+            )
         lock_acquired = True
 
         store.ensure_schema()
@@ -239,7 +244,7 @@ def main():
     finally:
         if lock_acquired:
             try:
-                store.release_lock(template_id)
+                store.release_date_lock(template_id, selected_date)
             except Exception:
                 pass
         store.close()
