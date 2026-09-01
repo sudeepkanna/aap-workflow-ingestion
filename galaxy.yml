@@ -4,10 +4,11 @@ version: 0.1.0
 readme: README.md
 authors:
   - Sudeep
-summary: Enterprise-oriented recursive AAP workflow telemetry ingestion for PostgreSQL
+summary: Enterprise-oriented recursive and date-scoped AAP workflow telemetry ingestion for PostgreSQL
 description: >-
-  An Ansible collection POC that recursively discovers execution trees from an AAP Workflow Job Template
-  and idempotently persists workflow, job, host, inventory and event telemetry to PostgreSQL.
+  An Ansible collection POC that selects workflow runs by calendar date, recursively discovers execution trees
+  from an AAP Workflow Job Template and idempotently persists workflow, job, host, inventory and event telemetry
+  to PostgreSQL.
 license:
   - MIT
 tags:
