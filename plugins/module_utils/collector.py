@@ -125,9 +125,21 @@ class WorkflowCollector:
         metrics["unreachable"] += event_metrics["unreachable"]
 
 
-def plan_roots(client: AAPClient, template_id: int, after_id: int = 0, limit: int = 0) -> List[Dict[str, Any]]:
+def plan_roots(
+    client: AAPClient,
+    template_id: int,
+    started_gte: str,
+    started_lt: str,
+    after_id: int = 0,
+    limit: int = 0,
+) -> List[Dict[str, Any]]:
     roots: List[Dict[str, Any]] = []
-    for root in client.workflow_runs(template_id, after_id=after_id):
+    for root in client.workflow_runs(
+        template_id,
+        started_gte=started_gte,
+        started_lt=started_lt,
+        after_id=after_id,
+    ):
         roots.append(root)
         if limit and len(roots) >= limit:
             break
