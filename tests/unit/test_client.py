@@ -1,4 +1,6 @@
-from plugins.module_utils.aap_client import AAPClient
+import pytest
+
+from plugins.module_utils.aap_client import AAPClient, AAPClientError
 
 
 class RecordingClient(AAPClient):
@@ -31,3 +33,15 @@ def test_workflow_runs_uses_date_window_and_checkpoint():
         "order_by": "id",
         "id__gt": 500,
     }
+
+
+def test_absolute_related_url_must_remain_on_controller_origin():
+    client = AAPClient("https://aap.example.com", "token")
+    try:
+        assert client._url("https://aap.example.com/api/v2/jobs/1/") == (
+            "https://aap.example.com/api/v2/jobs/1/"
+        )
+        with pytest.raises(AAPClientError):
+            client._url("https://other.example.com/api/v2/jobs/1/")
+    finally:
+        client.close()
